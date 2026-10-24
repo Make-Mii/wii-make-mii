@@ -1,6 +1,7 @@
 import socket, os
 
 WII_IP = "192.168.137.39"  # Replace with the IP shown on the top of your Wii screen
+#WII_IP = "10.249.68.99"  # Replace with the IP shown on the top of your Wii screen
 PORT = 8080
 mi_path = "mii.mii"
 

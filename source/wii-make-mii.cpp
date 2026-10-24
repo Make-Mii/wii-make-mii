@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <malloc.h>
+#include <string> 
 
 #include <grrlib.h>
 
@@ -13,9 +14,9 @@ extern "C" {
     #include <ogc/isfs.h>
 }
 
+#include "miirender.h"
 #include "font_ttf.h"
 #include "logo_png.h"
-
 
 #define LISTEN_PORT 8080
 #define RFL_DB_SIZE 0x1F1E0
@@ -45,8 +46,9 @@ struct RawMiiData {
 //---------------------------------------------------------------------------------
 // Global State & Wii Light Aesthetic Colors (0xRRGGBBAA format for GRRLIB)
 //---------------------------------------------------------------------------------
-static GRRLIB_ttfFont *g_font = nullptr;
+static GRRLIB_ttfFont *g_font    = nullptr;
 static GRRLIB_texImg  *g_logoTex = nullptr;
+static MiiAvatar      *g_avatar  = nullptr;
 
 RawMiiData g_receivedMii = {};
 bool g_hasMii = false;
@@ -67,36 +69,27 @@ constexpr u32 COL_RED         = 0xE04848FF; // Offline / Error red
 //---------------------------------------------------------------------------------
 // GRRLIB Rounded Box & Text Helpers
 //---------------------------------------------------------------------------------
-
-// Draws a filled rounded rectangle using overlapping rects and 4 corner circles
 void drawFilledRoundedRect(f32 x, f32 y, f32 w, f32 h, f32 r, u32 color) {
     if (r <= 0.0f) {
         GRRLIB_Rectangle(x, y, w, h, color, true);
         return;
     }
-    // Center & vertical/horizontal spans
     GRRLIB_Rectangle(x + r, y,     w - 2.0f * r, h,            color, true);
     GRRLIB_Rectangle(x,     y + r, r,            h - 2.0f * r, color, true);
     GRRLIB_Rectangle(x + w - r, y + r, r,        h - 2.0f * r, color, true);
 
-    // Four rounded corners
     GRRLIB_Circle(x + r,     y + r,     r, color, true);
     GRRLIB_Circle(x + w - r, y + r,     r, color, true);
     GRRLIB_Circle(x + r,     y + h - r, r, color, true);
     GRRLIB_Circle(x + w - r, y + h - r, r, color, true);
 }
 
-// Draws a Wii-style rounded panel with a subtle drop shadow and 2px border
 void drawRoundedPanel(f32 x, f32 y, f32 w, f32 h, f32 radius, u32 fill, u32 border) {
-    // Subtle 2px bottom drop-shadow for depth
     drawFilledRoundedRect(x + 2.0f, y + 3.0f, w, h, radius, COL_SHADOW);
-    // Outer border shape
     drawFilledRoundedRect(x, y, w, h, radius, border);
-    // Inner panel fill (inset by 2px)
     drawFilledRoundedRect(x + 2.0f, y + 2.0f, w - 4.0f, h - 4.0f, radius - 2.0f, fill);
 }
 
-// Formatted printf wrapper around GRRLIB_PrintfTTF
 void drawTextTTF(int x, int y, u32 size, u32 color, const char *fmt, ...) {
     if (!g_font) return;
     char buf[128];
@@ -108,11 +101,45 @@ void drawTextTTF(int x, int y, u32 size, u32 color, const char *fmt, ...) {
     GRRLIB_PrintfTTF(x, y, g_font, buf, size, color);
 }
 
+int getMiiCount() {
+    bool weInitialized = (ISFS_Initialize() == ISFS_OK);
+
+    s32 fd = ISFS_Open("/shared2/menu/FaceLib/RFL_DB.dat", ISFS_OPEN_READ);
+    if (fd < 0) {
+        if (weInitialized) ISFS_Deinitialize();
+        return -1; // Failed to open file (missing AHBPROT or file error)
+    }
+
+    // Read the database header + 100 slots (7404 bytes minimum)
+    alignas(32) static u8 tempDb[RFL_DB_SIZE];
+    s32 bytesRead = ISFS_Read(fd, tempDb, RFL_DB_SIZE);
+    ISFS_Close(fd);
+    if (weInitialized) ISFS_Deinitialize();
+
+    if (bytesRead < 4 + (100 * 74)) {
+        return -1;
+    }
+
+    const RawMiiData *slots = reinterpret_cast<const RawMiiData*>(tempDb + 4);
+    int count = 0;
+
+    for (int i = 0; i < 100; i++) {
+        // A slot is populated if the Mii ID is non-zero
+        if (slots[i].miiID[0] != 0 || slots[i].miiID[1] != 0 ||
+            slots[i].miiID[2] != 0 || slots[i].miiID[3] != 0) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
 //---------------------------------------------------------------------------------
-// NAND Mii Plaza Save Logic (Unchanged)
+// NAND Mii Plaza Save Logic
 //---------------------------------------------------------------------------------
 bool saveToMiiPlaza() {
-    const char *newName = "NewMii";
+    std::string miiNameStr = "Mii_" + std::to_string(getMiiCount());
+    const char *newName = miiNameStr.c_str(); 
     memset(g_receivedMii.name, 0, sizeof(g_receivedMii.name));
     for (int i = 0; newName[i] != '\0'; i++) g_receivedMii.name[i] = newName[i];
 
@@ -122,10 +149,13 @@ bool saveToMiiPlaza() {
         g_receivedMii.miiID[3] = 1;
     }
 
-    if (ISFS_Initialize() != ISFS_OK) return false;
+    // Try initializing, but ignore error if already active (ISFS_ERROR -102 / ISFS_OK 0)
+    s32 isfs_ret = ISFS_Initialize();
+    bool weInitialized = (isfs_ret == ISFS_OK);
+
     s32 fd = ISFS_Open("/shared2/menu/FaceLib/RFL_DB.dat", ISFS_OPEN_RW);
     if (fd < 0) {
-        ISFS_Deinitialize();
+        if (weInitialized) ISFS_Deinitialize();
         return false;
     }
 
@@ -155,8 +185,9 @@ bool saveToMiiPlaza() {
         ISFS_Seek(fd, 0, SEEK_SET);
         ok = (ISFS_Write(fd, g_db, RFL_DB_SIZE) == RFL_DB_SIZE);
     }
+
     ISFS_Close(fd);
-    ISFS_Deinitialize();
+    // Keep ISFS open for the life of the application or only deinit if we started it
     return ok;
 }
 
@@ -170,38 +201,44 @@ void renderAppUI(bool netActive, const char *localIP) {
     // 1. TOP STATUS BAR
     drawRoundedPanel(20, 16, 600, 38, 10.0f, COL_PANEL, COL_BORDER);
     u32 ledColor = netActive ? COL_GREEN : COL_RED;
-    GRRLIB_Circle(42, 35, 8, ledColor, true); // Smooth circular status LED
+    GRRLIB_Circle(42, 35, 8, ledColor, true);
     drawTextTTF(60, 23, 18, COL_TEXT_DARK, "NET: %s   |   WII IP: %s:%d",
                 netActive ? "ONLINE" : "OFFLINE", localIP, LISTEN_PORT);
 
-    // 2. FACE PREVIEW AREA (Left/Top-Left viewport reserved for your Mii renderer)
-    drawRoundedPanel(20, 66, 330, 310, 14.0f, COL_PANEL, COL_BORDER);
-    drawTextTTF(36, 76, 16, COL_TEXT_LABEL, "MII PREVIEW");
-    GRRLIB_Rectangle(36, 100, 298, 2, COL_BORDER, true);
-    // --> Your Mii Face Rendering Call Goes Here <--
-
-    // 3. RIGHT-HAND ATTRIBUTE LIST PANEL
-    drawRoundedPanel(366, 66, 254, 310, 14.0f, COL_PANEL, COL_BORDER);
-    drawTextTTF(382, 76, 16, COL_WII_BLUE, "MII ATTRIBUTES");
-    GRRLIB_Rectangle(382, 100, 222, 2, COL_BORDER, true);
+    // 2. LEFT-HAND ATTRIBUTE LIST PANEL (x=20, w=254)
+    drawRoundedPanel(20, 66, 254, 310, 14.0f, COL_PANEL, COL_BORDER);
+    drawTextTTF(36, 76, 16, COL_WII_BLUE, "MII ATTRIBUTES");
+    GRRLIB_Rectangle(36, 100, 222, 2, COL_BORDER, true);
 
     int attrY = 108;
     int lineStep = 20;
     const RawMiiData &m = g_receivedMii;
 
-    drawTextTTF(382, attrY, 14, COL_TEXT_DARK,  "Gender    : %u", m.isGirl);                       attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_DARK,  "Fav Color : %u", m.favColor);                     attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_DARK,  "Height/Wt : %u / %u", m.height, m.weight);        attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Face/Skin : %u / %u", m.faceShape, m.skinColor);  attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Feature   : %u", m.facialFeature);                attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Hair/Col  : %u / %u", m.hairType, m.hairColor);   attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Brows/Col : %u / %u", m.eyebrowType, m.eyebrowColor); attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Eyes/Col  : %u / %u", m.eyeType, m.eyeColor);     attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Nose/Size : %u / %u", m.noseType, m.noseSize);    attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_LABEL, "Mouth/Col : %u / %u", m.lipType, m.lipColor);     attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_DARK,  "Glasses   : %u", m.glassesType);                  attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_DARK,  "Beard/Mst : %u / %u", m.beardType, m.mustacheType); attrY += lineStep;
-    drawTextTTF(382, attrY, 14, COL_TEXT_DARK,  "Mole      : %u", m.moleOn);
+    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Gender    : %u", m.isGirl);                       attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Fav Color : %u", m.favColor);                     attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Height/Wt : %u / %u", m.height, m.weight);        attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Face/Skin : %u / %u", m.faceShape, m.skinColor);  attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Feature   : %u", m.facialFeature);                attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Hair/Col  : %u / %u", m.hairType, m.hairColor);   attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Brows/Col : %u / %u", m.eyebrowType, m.eyebrowColor); attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Eyes/Col  : %u / %u", m.eyeType, m.eyeColor);     attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Nose/Size : %u / %u", m.noseType, m.noseSize);    attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Mouth/Col : %u / %u", m.lipType, m.lipColor);     attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Glasses   : %u", m.glassesType);                  attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Beard/Mst : %u / %u", m.beardType, m.mustacheType); attrY += lineStep;
+    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Mole      : %u", m.moleOn);
+
+    // 3. TOP-RIGHT FACE PREVIEW PANEL (x=290, y=66, w=330, h=310)
+    drawRoundedPanel(290, 66, 330, 310, 14.0f, COL_PANEL, COL_BORDER);
+    drawTextTTF(306, 76, 16, COL_TEXT_LABEL, "MII PREVIEW");
+    GRRLIB_Rectangle(306, 100, 298, 2, COL_BORDER, true);
+
+    if (g_hasMii && g_avatar) {
+        g_avatar->draw(430.0f, 205.0f, 1.3f);
+    } else {
+        // Show waiting text centered in the preview box
+        drawTextTTF(370, 230, 16, COL_RED, "Waiting for Mii...");
+    }
 
     // 4. BOTTOM-LEFT LOGO SPACE
     drawRoundedPanel(20, 392, 160, 64, 12.0f, COL_PANEL, COL_BORDER);
@@ -245,13 +282,18 @@ int main(int argc, char **argv) {
         }
     }
 
-    // 2. Initialize GRRLIB & Wiimote
+    // 2. Initialize GRRLIB, Wiimote, and Mii Renderer Sprite Sheets
     GRRLIB_Init();
     WPAD_Init();
+    bool miiRenderReady = MiiRender_Init();
 
-    // 3. Load TrueType Font and PNG Logo from memory buffers
+    // 3. Load TrueType Font, PNG Logo, and create MiiAvatar instance
     g_font    = GRRLIB_LoadTTF(font_ttf, font_ttf_size);
     g_logoTex = GRRLIB_LoadTexturePNG(logo_png);
+
+    if (miiRenderReady) {
+        g_avatar = new MiiAvatar();
+    }
 
     // 4. Main 60 FPS Loop
     while (SYS_MainLoop()) {
@@ -259,6 +301,7 @@ int main(int argc, char **argv) {
         u32 pressed = WPAD_ButtonsDown(0);
         if (pressed & WPAD_BUTTON_HOME) break;
 
+        // Poll UDP for incoming 74-byte .mii packets
         if (netActive && sock >= 0) {
             RawMiiData incoming;
             struct sockaddr_in client;
@@ -267,17 +310,41 @@ int main(int argc, char **argv) {
                              reinterpret_cast<struct sockaddr*>(&client), &clientLen) == sizeof(RawMiiData)) {
                 g_receivedMii = incoming;
                 g_hasMii = true;
+
+                // Decode raw 74-byte packet into Mii struct and update avatar preview
+                if (g_avatar) {
+                    Mii decodedMii;
+                    MiiDecodeRaw(reinterpret_cast<const u8*>(&g_receivedMii), &decodedMii);
+                    g_avatar->setMii(decodedMii);
+                }
                 snprintf(g_statusMsg, sizeof(g_statusMsg), "Received Mii! Ready to save.");
             }
         }
 
+        // Optional: Expressions on D-Pad / 1 / 2 buttons
+        if (g_avatar) {
+            if (pressed & WPAD_BUTTON_UP)   g_avatar->setExpression(MII_HAPPY);
+            if (pressed & WPAD_BUTTON_DOWN) g_avatar->setExpression(MII_NEUTRAL);
+            if (pressed & WPAD_BUTTON_B)    g_avatar->setExpression(MII_SAD);
+            if (pressed & WPAD_BUTTON_1)    g_avatar->setExpression(MII_SHOCKED);
+            if (pressed & WPAD_BUTTON_2)    g_avatar->setExpression(MII_MAD);
+        }
+
+        // Save to NAND Mii Plaza on [A]
         if ((pressed & WPAD_BUTTON_A) && g_hasMii) {
             if (saveToMiiPlaza()) {
                 g_hasMii = false;
+                if (g_avatar) g_avatar->setExpression(MII_HAPPY);
                 snprintf(g_statusMsg, sizeof(g_statusMsg), "Saved 'NewMii' to Mii Plaza!");
             } else {
                 snprintf(g_statusMsg, sizeof(g_statusMsg), "Error: Could not write RFL_DB.dat");
             }
+        }
+
+        // IMPORTANT: Call avatar->update() FIRST before drawing the UI!
+        // (rebuild() uses EFB composition and clears the screen when dirty/blinking)
+        if (g_avatar) {
+            g_avatar->update();
         }
 
         // Draw UI and push frame to screen
@@ -286,6 +353,11 @@ int main(int argc, char **argv) {
     }
 
     // Clean up resources on exit
+    if (g_avatar) {
+        delete g_avatar;
+        g_avatar = nullptr;
+    }
+    MiiRender_Shutdown();
     GRRLIB_FreeTTF(g_font);
     GRRLIB_FreeTexture(g_logoTex);
     GRRLIB_Exit();
