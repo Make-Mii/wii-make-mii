@@ -1,5 +1,5 @@
-miidraw.o: C:/wii_dev/rendermiiexample/source/miidraw.cpp \
- C:/msys64/opt/devkitpro/libogc/include/mii.h \
+miirender.o: C:/wii_dev/rendermiiexample/source/miirender.cpp \
+ C:/wii_dev/rendermiiexample/source/miirender.h \
  C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib.h \
  C:/msys64/opt/devkitpro/libogc/include/gccore.h \
  C:/msys64/opt/devkitpro/libogc/include/ogc/dsp.h \
@@ -74,6 +74,7 @@ miidraw.o: C:/wii_dev/rendermiiexample/source/miidraw.cpp \
  C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_pixel.h \
  C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_settings.h \
  C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_texSetup.h \
+ C:/msys64/opt/devkitpro/libogc/include/mii.h \
  C:/msys64/opt/devkitpro/libogc/include/ogc/isfs.h \
  C:/wii_dev/rendermiiexample/build/mii_heads_png.h \
  C:/wii_dev/rendermiiexample/build/mii_hairs1_png.h \
@@ -89,7 +90,7 @@ miidraw.o: C:/wii_dev/rendermiiexample/source/miidraw.cpp \
  C:/wii_dev/rendermiiexample/build/mii_beards_png.h \
  C:/wii_dev/rendermiiexample/build/mii_mustache_png.h \
  C:/wii_dev/rendermiiexample/build/mii_glasses_png.h
-C:/msys64/opt/devkitpro/libogc/include/mii.h:
+C:/wii_dev/rendermiiexample/source/miirender.h:
 C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib.h:
 C:/msys64/opt/devkitpro/libogc/include/gccore.h:
 C:/msys64/opt/devkitpro/libogc/include/ogc/dsp.h:
@@ -164,6 +165,7 @@ C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_handle.h:
 C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_pixel.h:
 C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_settings.h:
 C:/msys64/opt/devkitpro/portlibs/wii/include/grrlib/GRRLIB_texSetup.h:
+C:/msys64/opt/devkitpro/libogc/include/mii.h:
 C:/msys64/opt/devkitpro/libogc/include/ogc/isfs.h:
 C:/wii_dev/rendermiiexample/build/mii_heads_png.h:
 C:/wii_dev/rendermiiexample/build/mii_hairs1_png.h:
