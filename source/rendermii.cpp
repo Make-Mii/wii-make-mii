@@ -11,12 +11,11 @@ int main() {
 
     static Mii miis[100];
 
-	// TODO: Change this once we have the struct ready to be used from AI model
-    int count = MiiLoadFromNand(miis, 100);
-    int current = 0;
+	// TODO: Import struct here once we have it ready to be used from AI model
+    Nii myMii;
 
     MiiAvatar avatar;
-    if (count > 0) avatar.setMii(miis[0]);
+    avatar.setMii(myMii);
     // Any other source works too:  Mii m; MiiDecodeRaw(my74Bytes, &m); avatar.setMii(m);
 
     while (1) {
