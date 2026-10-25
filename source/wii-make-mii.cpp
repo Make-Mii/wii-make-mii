@@ -138,16 +138,19 @@ int getMiiCount() {
 // NAND Mii Plaza Save Logic
 //---------------------------------------------------------------------------------
 bool saveToMiiPlaza() {
-    std::string miiNameStr = "Mii_" + std::to_string(getMiiCount());
+    int mii_count = getMiiCount();
+    std::string miiNameStr = "Mii_" + std::to_string(mii_count);
     const char *newName = miiNameStr.c_str(); 
     memset(g_receivedMii.name, 0, sizeof(g_receivedMii.name));
     for (int i = 0; newName[i] != '\0'; i++) g_receivedMii.name[i] = newName[i];
 
+    //Generate a guaranteed unique 4-byte miiID for every save
     g_receivedMii.invalid = 0;
-    g_receivedMii.miiID[0] = (g_receivedMii.miiID[0] & 0x1F) | 0x80;
-    if (g_receivedMii.miiID[1] == 0 && g_receivedMii.miiID[2] == 0 && g_receivedMii.miiID[3] == 0) {
-        g_receivedMii.miiID[3] = 1;
-    }
+    u32 uniqueVal = (static_cast<u32>(rand()) << 8) ^ static_cast<u32>(mii_count);
+    g_receivedMii.miiID[0] = 0x80 | ((uniqueVal >> 24) & 0x1F);
+    g_receivedMii.miiID[1] = (uniqueVal >> 16) & 0xFF;
+    g_receivedMii.miiID[2] = (uniqueVal >> 8)  & 0xFF;
+    g_receivedMii.miiID[3] = (uniqueVal & 0xFE) | 1; // Ensure non-zero
 
     // Try initializing, but ignore error if already active (ISFS_ERROR -102 / ISFS_OK 0)
     s32 isfs_ret = ISFS_Initialize();
@@ -237,22 +240,22 @@ void renderAppUI(bool netActive, const char *localIP) {
         g_avatar->draw(430.0f, 205.0f, 1.3f);
     } else {
         // Show waiting text centered in the preview box
-        drawTextTTF(370, 230, 16, COL_RED, "Waiting for Mii...");
+        drawTextTTF(400, 230, 16, COL_RED, "Waiting for Mii...");
     }
 
     // 4. BOTTOM-LEFT LOGO SPACE
-    drawRoundedPanel(20, 392, 160, 64, 12.0f, COL_PANEL, COL_BORDER);
+    drawRoundedPanel(20, 392, 160, 80, 12.0f, COL_PANEL, COL_BORDER);
     if (g_logoTex) {
-        GRRLIB_DrawImg(24, 396, g_logoTex, 0, 1.0f, 1.0f, 0xFFFFFFFF);
+        GRRLIB_DrawImg(38, 390, g_logoTex, 0, 0.5f, 0.5f, 0xFFFFFFFF);
     } else {
         drawTextTTF(52, 415, 16, COL_TEXT_LABEL, "LOGO HERE");
     }
 
     // 5. BOTTOM INSTRUCTION BAR
-    drawRoundedPanel(196, 392, 424, 64, 12.0f, COL_PANEL, COL_BORDER);
-    drawTextTTF(214, 402, 18, g_hasMii ? COL_GREEN : COL_TEXT_DARK,
+    drawRoundedPanel(196, 392, 424, 80, 12.0f, COL_PANEL, COL_BORDER);
+    drawTextTTF(214, 410, 18, g_hasMii ? COL_GREEN : COL_TEXT_DARK,
                 "Press [A] to save Mii to Plaza");
-    drawTextTTF(214, 428, 15, COL_WII_BLUE, "%s", g_statusMsg);
+    drawTextTTF(214, 436, 15, COL_WII_BLUE, "%s", g_statusMsg);
 }
 
 //---------------------------------------------------------------------------------
