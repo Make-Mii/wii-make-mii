@@ -3,7 +3,7 @@
 #include <cstring>
 #include <cstdarg>
 #include <malloc.h>
-#include <string> 
+#include <string>
 
 #include <grrlib.h>
 
@@ -51,8 +51,12 @@ static GRRLIB_texImg  *g_logoTex = nullptr;
 static MiiAvatar      *g_avatar  = nullptr;
 
 RawMiiData g_receivedMii = {};
-bool g_hasMii = false;
-char g_statusMsg[64] = "Waiting for .mii packet...";
+bool g_hasMii    = false;
+bool g_isPaused  = false; // false = LIVE_UPDATE, true = PAUSED (inspecting Mii)
+int  g_totalMiis = -1;
+u32  g_pktCount  = 0;
+
+char g_statusMsg[64] = "Waiting for live .mii stream...";
 alignas(32) static u8 g_db[RFL_DB_SIZE];
 
 // Wii System Menu / Mii Channel Light Palette
@@ -63,7 +67,8 @@ constexpr u32 COL_SHADOW      = 0xD0D8E2FF; // Soft drop-shadow under panels
 constexpr u32 COL_TEXT_DARK   = 0x2C3540FF; // Deep charcoal for primary text
 constexpr u32 COL_TEXT_LABEL  = 0x5A6878FF; // Slate grey for secondary labels
 constexpr u32 COL_WII_BLUE    = 0x0096DCFF; // Signature Wii cyan-blue accent
-constexpr u32 COL_GREEN       = 0x28B463FF; // Online / Ready green
+constexpr u32 COL_GREEN       = 0x28B463FF; // Online / Live green
+constexpr u32 COL_AMBER       = 0xF39C12FF; // Paused / Inspecting amber-gold
 constexpr u32 COL_RED         = 0xE04848FF; // Offline / Error red
 
 //---------------------------------------------------------------------------------
@@ -101,16 +106,18 @@ void drawTextTTF(int x, int y, u32 size, u32 color, const char *fmt, ...) {
     GRRLIB_PrintfTTF(x, y, g_font, buf, size, color);
 }
 
+//---------------------------------------------------------------------------------
+// NAND Mii Plaza Helpers
+//---------------------------------------------------------------------------------
 int getMiiCount() {
     bool weInitialized = (ISFS_Initialize() == ISFS_OK);
 
     s32 fd = ISFS_Open("/shared2/menu/FaceLib/RFL_DB.dat", ISFS_OPEN_READ);
     if (fd < 0) {
         if (weInitialized) ISFS_Deinitialize();
-        return -1; // Failed to open file (missing AHBPROT or file error)
+        return -1;
     }
 
-    // Read the database header + 100 slots (7404 bytes minimum)
     alignas(32) static u8 tempDb[RFL_DB_SIZE];
     s32 bytesRead = ISFS_Read(fd, tempDb, RFL_DB_SIZE);
     ISFS_Close(fd);
@@ -124,7 +131,6 @@ int getMiiCount() {
     int count = 0;
 
     for (int i = 0; i < 100; i++) {
-        // A slot is populated if the Mii ID is non-zero
         if (slots[i].miiID[0] != 0 || slots[i].miiID[1] != 0 ||
             slots[i].miiID[2] != 0 || slots[i].miiID[3] != 0) {
             count++;
@@ -134,25 +140,29 @@ int getMiiCount() {
     return count;
 }
 
-//---------------------------------------------------------------------------------
-// NAND Mii Plaza Save Logic
-//---------------------------------------------------------------------------------
-bool saveToMiiPlaza() {
+bool saveToMiiPlaza(char *outSavedName, size_t maxNameLen) {
     int mii_count = getMiiCount();
-    std::string miiNameStr = "Mii_" + std::to_string(mii_count);
-    const char *newName = miiNameStr.c_str(); 
-    memset(g_receivedMii.name, 0, sizeof(g_receivedMii.name));
-    for (int i = 0; newName[i] != '\0'; i++) g_receivedMii.name[i] = newName[i];
+    if (mii_count < 0) mii_count = 0;
 
-    //Generate a guaranteed unique 4-byte miiID for every save
+    std::string miiNameStr = "Mii_" + std::to_string(mii_count + 1);
+    const char *newName = miiNameStr.c_str();
+    if (outSavedName && maxNameLen > 0) {
+        snprintf(outSavedName, maxNameLen, "%s", newName);
+    }
+
+    memset(g_receivedMii.name, 0, sizeof(g_receivedMii.name));
+    for (int i = 0; newName[i] != '\0' && i < 10; i++) {
+        g_receivedMii.name[i] = newName[i];
+    }
+
+    // Generate a guaranteed unique 4-byte miiID for every save
     g_receivedMii.invalid = 0;
-    u32 uniqueVal = (static_cast<u32>(rand()) << 8) ^ static_cast<u32>(mii_count);
+    u32 uniqueVal = (static_cast<u32>(rand()) << 8) ^ static_cast<u32>(mii_count + 1);
     g_receivedMii.miiID[0] = 0x80 | ((uniqueVal >> 24) & 0x1F);
     g_receivedMii.miiID[1] = (uniqueVal >> 16) & 0xFF;
     g_receivedMii.miiID[2] = (uniqueVal >> 8)  & 0xFF;
     g_receivedMii.miiID[3] = (uniqueVal & 0xFE) | 1; // Ensure non-zero
 
-    // Try initializing, but ignore error if already active (ISFS_ERROR -102 / ISFS_OK 0)
     s32 isfs_ret = ISFS_Initialize();
     bool weInitialized = (isfs_ret == ISFS_OK);
 
@@ -169,10 +179,14 @@ bool saveToMiiPlaza() {
             memcpy(g_receivedMii.systemID, slots[0].systemID, 4);
         }
 
+        // Find the first empty slot
         int target = -1;
         for (int i = 0; i < 100; i++) {
-            if (memcmp(slots[i].miiID, g_receivedMii.miiID, 4) == 0) { target = i; break; }
-            if (target == -1 && slots[i].miiID[0] == 0 && slots[i].miiID[1] == 0) target = i;
+            if (slots[i].miiID[0] == 0 && slots[i].miiID[1] == 0 &&
+                slots[i].miiID[2] == 0 && slots[i].miiID[3] == 0) {
+                target = i;
+                break;
+            }
         }
         if (target == -1) target = 0;
         slots[target] = g_receivedMii;
@@ -190,7 +204,7 @@ bool saveToMiiPlaza() {
     }
 
     ISFS_Close(fd);
-    // Keep ISFS open for the life of the application or only deinit if we started it
+    if (weInitialized) ISFS_Deinitialize();
     return ok;
 }
 
@@ -198,64 +212,69 @@ bool saveToMiiPlaza() {
 // Main Layout Renderer
 //---------------------------------------------------------------------------------
 void renderAppUI(bool netActive, const char *localIP) {
-    // Clear background to soft Wii light grey
     GRRLIB_FillScreen(COL_BG_LIGHT);
 
     // 1. TOP STATUS BAR
-    drawRoundedPanel(20, 16, 600, 38, 10.0f, COL_PANEL, COL_BORDER);
+    drawRoundedPanel(20, 14, 600, 38, 10.0f, COL_PANEL, COL_BORDER);
     u32 ledColor = netActive ? COL_GREEN : COL_RED;
-    GRRLIB_Circle(42, 35, 8, ledColor, true);
-    drawTextTTF(60, 23, 18, COL_TEXT_DARK, "NET: %s   |   WII IP: %s:%d",
+    GRRLIB_Circle(40, 33, 7, ledColor, true);
+    drawTextTTF(56, 21, 17, COL_TEXT_DARK, "NET: %s  |  %s:%d",
                 netActive ? "ONLINE" : "OFFLINE", localIP, LISTEN_PORT);
 
-    // 2. LEFT-HAND ATTRIBUTE LIST PANEL (x=20, w=254)
-    drawRoundedPanel(20, 66, 254, 310, 14.0f, COL_PANEL, COL_BORDER);
-    drawTextTTF(36, 76, 16, COL_WII_BLUE, "MII ATTRIBUTES");
-    GRRLIB_Rectangle(36, 100, 222, 2, COL_BORDER, true);
+    if (g_totalMiis >= 0) {
+        drawTextTTF(465, 21, 17, COL_WII_BLUE, "PLAZA: %d/100", g_totalMiis);
+    } else {
+        drawTextTTF(465, 21, 17, COL_TEXT_LABEL, "PLAZA: --/100");
+    }
 
-    int attrY = 108;
-    int lineStep = 20;
+    // 2. LEFT-HAND ATTRIBUTE LIST PANEL (x=20, y=62, w=254, h=234)
+    drawRoundedPanel(20, 62, 254, 256, 14.0f, COL_PANEL, COL_BORDER);
+    drawTextTTF(36, 72, 20, COL_WII_BLUE, "MII ATTRIBUTES");
+    GRRLIB_Rectangle(36, 104, 222, 2, COL_BORDER, true);
+
+    int attrY = 122;
+    int lineStep = 26;
     const RawMiiData &m = g_receivedMii;
 
-    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Gender    : %u", m.isGirl);                       attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Fav Color : %u", m.favColor);                     attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Height/Wt : %u / %u", m.height, m.weight);        attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Face/Skin : %u / %u", m.faceShape, m.skinColor);  attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Feature   : %u", m.facialFeature);                attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Hair/Col  : %u / %u", m.hairType, m.hairColor);   attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Brows/Col : %u / %u", m.eyebrowType, m.eyebrowColor); attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Eyes/Col  : %u / %u", m.eyeType, m.eyeColor);     attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Nose/Size : %u / %u", m.noseType, m.noseSize);    attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_LABEL, "Mouth/Col : %u / %u", m.lipType, m.lipColor);     attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Glasses   : %u", m.glassesType);                  attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Beard/Mst : %u / %u", m.beardType, m.mustacheType); attrY += lineStep;
-    drawTextTTF(36, attrY, 14, COL_TEXT_DARK,  "Mole      : %u", m.moleOn);
+    if (g_hasMii) {
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Face/Skin : %u / %u", m.faceShape, m.skinColor);attrY += lineStep;
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Feature : %u", m.facialFeature);              attrY += lineStep;
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Hair/Col : %u / %u", m.hairType, m.hairColor); attrY += lineStep;
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Brows/Col : %u / %u", m.eyebrowType, m.eyebrowColor); attrY += lineStep;
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Eyes/Col : %u / %u", m.eyeType, m.eyeColor);   attrY += lineStep;
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Nose/Size : %u / %u", m.noseType, m.noseSize);  attrY += lineStep;
+        drawTextTTF(36, attrY, 16, COL_TEXT_DARK, "Mouth/Col : %u / %u", m.lipType, m.lipColor);   attrY += lineStep;
+    } else {
+        drawTextTTF(48, 196, 15, COL_RED, "No Mii data loaded");
+    }
 
-    // 3. TOP-RIGHT FACE PREVIEW PANEL (x=290, y=66, w=330, h=310)
-    drawRoundedPanel(290, 66, 330, 310, 14.0f, COL_PANEL, COL_BORDER);
-    drawTextTTF(306, 76, 16, COL_TEXT_LABEL, "MII PREVIEW");
-    GRRLIB_Rectangle(306, 100, 298, 2, COL_BORDER, true);
+    // 3. TOP-RIGHT FACE PREVIEW PANEL (x=290, y=62, w=330, h=318)
+    drawRoundedPanel(290, 62, 330, 318, 14.0f, COL_PANEL, COL_BORDER);
+    drawTextTTF(306, 72, 20, COL_WII_BLUE, "MII PREVIEW");
+
+
+    GRRLIB_Rectangle(306, 104, 298, 2, COL_BORDER, true);
 
     if (g_hasMii && g_avatar) {
         g_avatar->draw(430.0f, 205.0f, 1.3f);
     } else {
-        // Show waiting text centered in the preview box
-        drawTextTTF(400, 230, 16, COL_RED, "Waiting for Mii...");
+        drawTextTTF(385, 225, 16, COL_TEXT_LABEL, "Waiting for Mii...");
     }
 
     // 4. BOTTOM-LEFT LOGO SPACE
-    drawRoundedPanel(20, 392, 160, 80, 12.0f, COL_PANEL, COL_BORDER);
+    drawRoundedPanel(20, 328, 254, 140, 12.0f, COL_PANEL, COL_BORDER);
     if (g_logoTex) {
-        GRRLIB_DrawImg(38, 390, g_logoTex, 0, 0.5f, 0.5f, 0xFFFFFFFF);
-    } else {
-        drawTextTTF(52, 415, 16, COL_TEXT_LABEL, "LOGO HERE");
+        GRRLIB_DrawImg(38, 320, g_logoTex, 0, 0.9f, 0.9f, 0xFFFFFFFF);
     }
 
     // 5. BOTTOM INSTRUCTION BAR
-    drawRoundedPanel(196, 392, 424, 80, 12.0f, COL_PANEL, COL_BORDER);
-    drawTextTTF(214, 410, 18, g_hasMii ? COL_GREEN : COL_TEXT_DARK,
-                "Press [A] to save Mii to Plaza");
-    drawTextTTF(214, 436, 15, COL_WII_BLUE, "%s", g_statusMsg);
+    drawRoundedPanel(290, 390, 330, 78, 12.0f, COL_PANEL, COL_BORDER);
+    drawTextTTF(308, 398, 16, g_hasMii ? COL_GREEN : COL_RED,
+                "Press [A] to Save Mii to Plaza");
+    drawTextTTF(308, 421, 16, g_hasMii ? (g_isPaused ? COL_AMBER : COL_WII_BLUE) : COL_TEXT_LABEL,
+                g_isPaused ? "Press [B] to Resume Live Stream"
+                           : "Press [B] to Freeze & Inspect Mii");
+    drawTextTTF(308, 445, 14, g_isPaused ? COL_AMBER : COL_GREEN, "%s", g_statusMsg);
 }
 
 //---------------------------------------------------------------------------------
@@ -290,9 +309,10 @@ int main(int argc, char **argv) {
     WPAD_Init();
     bool miiRenderReady = MiiRender_Init();
 
-    // 3. Load TrueType Font, PNG Logo, and create MiiAvatar instance
-    g_font    = GRRLIB_LoadTTF(font_ttf, font_ttf_size);
-    g_logoTex = GRRLIB_LoadTexturePNG(logo_png);
+    // 3. Load TrueType Font, PNG Logo, initial Mii count, and MiiAvatar instance
+    g_font      = GRRLIB_LoadTTF(font_ttf, font_ttf_size);
+    g_logoTex   = GRRLIB_LoadTexturePNG(logo_png);
+    g_totalMiis = getMiiCount();
 
     if (miiRenderReady) {
         g_avatar = new MiiAvatar();
@@ -304,49 +324,61 @@ int main(int argc, char **argv) {
         u32 pressed = WPAD_ButtonsDown(0);
         if (pressed & WPAD_BUTTON_HOME) break;
 
-        // Poll UDP for incoming 74-byte .mii packets
+        // Toggle Live Update / Freeze with [B]
+        if ((pressed & WPAD_BUTTON_B) && g_hasMii) {
+            g_isPaused = !g_isPaused;
+            if (g_isPaused) {
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "Stream frozen.");
+            } else {
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "Live updating resumed (Pkts: %u)", g_pktCount);
+            }
+        }
+
+        // Drain UDP socket queue so live streaming never lags behind
         if (netActive && sock >= 0) {
             RawMiiData incoming;
+            RawMiiData latestPacket;
+            bool gotNewPacket = false;
             struct sockaddr_in client;
             u32 clientLen = sizeof(client);
-            if (net_recvfrom(sock, &incoming, sizeof(RawMiiData), 0,
-                             reinterpret_cast<struct sockaddr*>(&client), &clientLen) == sizeof(RawMiiData)) {
-                g_receivedMii = incoming;
+
+            while (net_recvfrom(sock, &incoming, sizeof(RawMiiData), 0,
+                                reinterpret_cast<struct sockaddr*>(&client), &clientLen) == sizeof(RawMiiData)) {
+                latestPacket = incoming;
+                gotNewPacket = true;
+                g_pktCount++;
+                clientLen = sizeof(client);
+            }
+
+            // Only update active Mii & rebuild face texture if NOT paused
+            if (gotNewPacket && !g_isPaused) {
+                // Avoid costly EFB texture rebuilds if the incoming 74 bytes are identical
+                bool dataChanged = !g_hasMii || (memcmp(&g_receivedMii, &latestPacket, sizeof(RawMiiData)) != 0);
+                g_receivedMii = latestPacket;
                 g_hasMii = true;
 
-                // Decode raw 74-byte packet into Mii struct and update avatar preview
-                if (g_avatar) {
+                if (dataChanged && g_avatar) {
                     Mii decodedMii;
                     MiiDecodeRaw(reinterpret_cast<const u8*>(&g_receivedMii), &decodedMii);
                     g_avatar->setMii(decodedMii);
                 }
-                snprintf(g_statusMsg, sizeof(g_statusMsg), "Received Mii! Ready to save.");
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "Live updating... (Packet #%u)", g_pktCount);
             }
-        }
-
-        // Optional: Expressions on D-Pad / 1 / 2 buttons
-        if (g_avatar) {
-            if (pressed & WPAD_BUTTON_UP)   g_avatar->setExpression(MII_HAPPY);
-            if (pressed & WPAD_BUTTON_DOWN) g_avatar->setExpression(MII_NEUTRAL);
-            if (pressed & WPAD_BUTTON_B)    g_avatar->setExpression(MII_SAD);
-            if (pressed & WPAD_BUTTON_1)    g_avatar->setExpression(MII_SHOCKED);
-            if (pressed & WPAD_BUTTON_2)    g_avatar->setExpression(MII_MAD);
         }
 
         // Save to NAND Mii Plaza on [A]
         if ((pressed & WPAD_BUTTON_A) && g_hasMii) {
-            if (saveToMiiPlaza()) {
-                g_hasMii = false;
-                if (g_avatar) g_avatar->setExpression(MII_HAPPY);
-                snprintf(g_statusMsg, sizeof(g_statusMsg), "Saved 'NewMii' to Mii Plaza!");
+            char savedName[16] = "";
+            if (saveToMiiPlaza(savedName, sizeof(savedName))) {
+                g_totalMiis = getMiiCount();
+                snprintf(g_statusMsg, sizeof(g_statusMsg), "Saved '%s' to Mii Plaza!", savedName);
             } else {
                 snprintf(g_statusMsg, sizeof(g_statusMsg), "Error: Could not write RFL_DB.dat");
             }
         }
 
         // IMPORTANT: Call avatar->update() FIRST before drawing the UI!
-        // (rebuild() uses EFB composition and clears the screen when dirty/blinking)
-        if (g_avatar) {
+        if (g_hasMii && g_avatar) {
             g_avatar->update();
         }
 
