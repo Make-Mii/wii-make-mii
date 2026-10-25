@@ -1,3 +1,6 @@
 # Make Mii!
 
-![logo](data/logo.png)
+<p align="center">
+  <img src="data/logo.png" />
+</p>
+
