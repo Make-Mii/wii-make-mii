@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1.0">
+  <name>Render Mii V3</name>
+  <coder>James</coder>
+  <version>3.0</version>
+  <no_ios_reload/>
+  <short_description>Mii Renderer</short_description>
+  <long_description>Renders a single mii in screen from API</long_description>
+</app>

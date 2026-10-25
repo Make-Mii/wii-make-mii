@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<app version="1.0">
+  <name>Render Mii</name>
+  <coder>James</coder>
+  <version>1.0</version>
+  <no_ios_reload/>
+  <short_description>Mii Renderer</short_description>
+  <long_description>Renders Miis directly from the Wii NAND using libmii and GRRLIB.</long_description>
+</app>
