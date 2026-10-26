@@ -1,12 +1,16 @@
 # Make Mii!
 
 <div align="center">
-  <img src="data/logo.png" alt="Make Mii Logo" width="300" />
+  <img src="https://raw.githubusercontent.com/Make-Mii/wii-ai/main/assets/logo.png" alt="Make Mii Logo" width="300" />
 
-  <p><strong>Real-time Mii avatar generation and rendering for the Nintendo Wii homebrew ecosystem</strong></p>
+  <p><strong>Real-time facial capture to playable Nintendo Wii Mii avatars</strong></p>
 
   <p>
     <a href="https://hacknotts.com">Built for HackNotts '26</a>
+  </p>
+  <p>
+    <img src="https://img.shields.io/badge/🏆_Best_AI%2FML_Project-HackNotts_'26-gold?style=for-the-badge" alt="Best AI/ML Project" />
+    <img src="https://img.shields.io/badge/🥈_Runner--up-Telluvian_Best_Use_of_Multiple_AI_Systems-silver?style=for-the-badge" alt="Telluvian Runner-up" />
   </p>
 </div>
 
